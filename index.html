@@ -173,6 +173,7 @@ fieldset.order{border:0;margin:0;padding:16px;background:var(--void);box-shadow:
 .line.small b{color:var(--rare)}.line.medium b{color:var(--legendary)}
 .total{margin:0;padding-top:12px;border-top:1px solid var(--edge);display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
 .total b{font-family:var(--pixel);font-size:1.5rem;color:var(--gold)}
+.botcheck{display:none}
 .status{margin:0;min-height:1.4em;color:var(--uncommon);font-size:.93rem}
 .loot{margin-top:28px;background:#0F0D17;box-shadow:inset 0 0 0 2px var(--gold);padding:16px 18px;display:flex;gap:14px;align-items:flex-start}
 .loot svg{width:30px;height:30px;flex:none;margin-top:2px}
@@ -545,6 +546,8 @@ footer b{font-family:var(--pixel);color:var(--text);font-weight:600}
         <label>Your name<input name="name" autocomplete="name"></label>
         <label>Department or lab<input name="dept"></label>
       </div>
+      <label>Your email<span class="hint">So I can reply with your quote.</span><input name="email" type="email" autocomplete="email"></label>
+      <input type="checkbox" name="botcheck" class="botcheck" tabindex="-1" autocomplete="off" aria-hidden="true">
       <fieldset class="order">
         <legend>How many objects?</legend>
         <div class="line small">
@@ -565,7 +568,7 @@ footer b{font-family:var(--pixel);color:var(--text);font-weight:600}
         <span class="hint">What each object has to fit and what's going wrong now.</span>
         <textarea name="desc"></textarea>
       </label>
-      <button class="btn" type="submit">Email my request</button>
+      <button class="btn" type="submit" id="sendbtn">Send request</button>
       <p class="status" id="status" role="status"></p>
     </form>
   </div>
@@ -574,7 +577,7 @@ footer b{font-family:var(--pixel);color:var(--text);font-weight:600}
 <footer>
   <div class="wrap">
     <b data-name>LabForge</b>
-    <span>Custom 3D-printed lab parts, Toronto. <a href="#" data-email-link>Email me</a></span>
+    <span>Custom 3D-printed lab parts, Toronto. <a href="#commission">Request a part</a></span>
   </div>
 </footer>
 
@@ -582,7 +585,7 @@ footer b{font-family:var(--pixel);color:var(--text);font-weight:600}
 /* ===================== CONFIG: edit these ===================== */
 const CONFIG = {
   name: "LabForge",
-  email: "devin.francey@gmail.com",                               // where requests go
+  formKey: "5244e7b5-98cb-40c8-b325-d5450812c609",                 // Web3Forms access key: requests go to your Gmail
   prices: { small: "$25", medium: "$35" }   // starting prices
 };
 /* ============================================================== */
@@ -592,7 +595,6 @@ document.querySelectorAll("[data-name]").forEach(el => el.textContent = CONFIG.n
 document.querySelectorAll("[data-price]").forEach(el => {
   const p = CONFIG.prices[el.dataset.price]; if (p) el.textContent = p;
 });
-document.querySelectorAll("[data-email-link]").forEach(el => el.href = "mailto:" + CONFIG.email);
 
 // ---------- Forge banner: hammer loop, sparks, items onto the belts ----------
 (() => {
@@ -763,36 +765,52 @@ document.querySelectorAll("[data-tier]").forEach(a => a.addEventListener("click"
 }));
 renderQty();
 
-// Turn the form into a pre-filled email
-document.getElementById("qform").addEventListener("submit", e => {
+// Send the request through Web3Forms; it arrives in your Gmail, and Reply goes to the requester
+document.getElementById("qform").addEventListener("submit", async e => {
   e.preventDefault();
-  const f = e.target, status = document.getElementById("status");
-  const missing = ["name","dept","desc"].filter(n => !f[n].value.trim());
+  const f = e.target, status = document.getElementById("status"), btn = document.getElementById("sendbtn");
+  const say = (msg, bad) => { status.style.color = bad ? "var(--ember)" : ""; status.textContent = msg; };
+  const missing = ["name","dept","email","desc"].filter(n => !f[n].value.trim());
   if (missing.length){
-    status.style.color = "var(--ember)";
-    status.textContent = "Add your name, department and a short description, then send again.";
+    say("Add your name, department, email and a short description, then send again.", true);
     f[missing[0]].focus(); return;
   }
+  if (!f.email.checkValidity()){ say("That email address doesn't look right. Check it and send again.", true); f.email.focus(); return; }
+
   const picked = Object.keys(qty).filter(k => qty[k] > 0);
   const summary = picked.length ? picked.map(k => `${qty[k]} × ${NAMES[k]}`).join(", ") : "Not sure yet";
-  const subject = `Part request: ${summary} (${f.dept.value.trim()})`;
-  const body = [
-    `Name: ${f.name.value.trim()}`,
-    `Department: ${f.dept.value.trim()}`,
-    "",
-    "Packages:",
-    ...(picked.length
-      ? picked.map(k => `  ${NAMES[k]} × ${qty[k]} (from ${money(qty[k] * priceNum(k))})`)
-      : ["  Not sure yet"]),
-    picked.length ? `Starting estimate: from ${money(estimate())}` : "",
-    `Needed by: ${f.date.value || "No date"}`,
-    "",
-    "What I need:",
-    f.desc.value.trim()
-  ].join("\n");
-  window.location.href = `mailto:${CONFIG.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  status.style.color = "";
-  status.textContent = "Your email app should open with the request filled in. Press send there.";
+  const packages = picked.length
+    ? picked.map(k => `${NAMES[k]} × ${qty[k]} (from ${money(qty[k] * priceNum(k))})`).join("\n") + `\nStarting estimate: from ${money(estimate())}`
+    : "Not sure yet";
+
+  btn.disabled = true; btn.textContent = "Sending…"; say("");
+  try {
+    const res = await fetch("https://api.web3forms.com/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({
+        access_key: CONFIG.formKey,
+        subject: `Part request: ${summary} (${f.dept.value.trim()})`,
+        from_name: `${CONFIG.name} website`,
+        botcheck: f.botcheck.checked,
+        name: f.name.value.trim(),
+        email: f.email.value.trim(),
+        department: f.dept.value.trim(),
+        packages,
+        needed_by: f.date.value || "No date",
+        message: f.desc.value.trim()
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) throw new Error(data.message || "Request failed");
+    f.reset(); Object.keys(qty).forEach(k => qty[k] = 0); renderQty();
+    btn.textContent = "Request sent!";
+    say("Request sent! I'll be in touch to book a time to measure.");
+    setTimeout(() => { btn.disabled = false; btn.textContent = "Send request"; }, 4000);
+  } catch (err) {
+    btn.disabled = false; btn.textContent = "Send request";
+    say("Couldn't send just now. Check your connection and try again in a minute.", true);
+  }
 });
 </script>
 </body>
